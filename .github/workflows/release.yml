@@ -116,10 +116,20 @@ jobs:
       - name: Configure SSH key
         run: |
           set -euo pipefail
+          : "${DEPLOY_HOST:?DEPLOY_HOST is required}"
+          : "${DEPLOY_USER:?DEPLOY_USER is required}"
+          : "${DEPLOY_SSH_KEY:?DEPLOY_SSH_KEY is required}"
+          if ! [[ "${DEPLOY_PORT:-22}" =~ ^[0-9]+$ ]]; then
+            echo "DEPLOY_PORT must be a numeric port (current value is invalid)."
+            exit 1
+          fi
           install -m 700 -d ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -p "${DEPLOY_PORT:-22}" "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          touch ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh-keyscan -T 15 -p "${DEPLOY_PORT:-22}" "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || \
+            echo "Warning: ssh-keyscan could not fetch host key; proceeding with accept-new on first SSH connect."
 
       - name: Deploy via SSH
         run: |
@@ -127,7 +137,7 @@ jobs:
 
           APP_NAME="${APP_NAME:-$REPO_LC}"
           SSH_PORT="${DEPLOY_PORT:-22}"
-          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20)
+          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new)
           REMOTE_COMPOSE="/tmp/${APP_NAME}-${DEPLOY_ENV}-docker-compose.yml"
           REMOTE_SCRIPT="/tmp/${APP_NAME}-${DEPLOY_ENV}-deploy.sh"
 
