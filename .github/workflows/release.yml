@@ -127,11 +127,12 @@ jobs:
 
           APP_NAME="${APP_NAME:-$REPO_LC}"
           SSH_PORT="${DEPLOY_PORT:-22}"
+          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20)
           REMOTE_COMPOSE="/tmp/${APP_NAME}-${DEPLOY_ENV}-docker-compose.yml"
           REMOTE_SCRIPT="/tmp/${APP_NAME}-${DEPLOY_ENV}-deploy.sh"
 
-          scp -P "$SSH_PORT" "$COMPOSE_SOURCE" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_COMPOSE}"
-          scp -P "$SSH_PORT" "infra/scripts/deploy.sh" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_SCRIPT}"
+          scp "${SSH_OPTS[@]}" -P "$SSH_PORT" "$COMPOSE_SOURCE" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_COMPOSE}"
+          scp "${SSH_OPTS[@]}" -P "$SSH_PORT" "infra/scripts/deploy.sh" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_SCRIPT}"
 
           printf -v ghcr_user_q '%q' "${GHCR_DEPLOY_USERNAME:-}"
           printf -v ghcr_token_q '%q' "${GHCR_DEPLOY_TOKEN:-}"
@@ -142,7 +143,7 @@ jobs:
           printf -v remote_compose_q '%q' "$REMOTE_COMPOSE"
           printf -v remote_script_q '%q' "$REMOTE_SCRIPT"
 
-          ssh -p "$SSH_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" "set -euo pipefail; \
+          ssh "${SSH_OPTS[@]}" -p "$SSH_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" "set -euo pipefail; \
             APP_NAME=${app_name_q}; \
             GHCR_OWNER=${owner_q}; \
             GHCR_REPO=${repo_q}; \
@@ -155,6 +156,6 @@ jobs:
             mkdir -p \"\${APP_DIR}\"; \
             install -m 0644 \"\${REMOTE_COMPOSE}\" \"\${APP_DIR}/docker-compose.yml\"; \
             install -m 0755 \"\${REMOTE_SCRIPT}\" \"\${APP_DIR}/deploy.sh\"; \
-            export APP_NAME GHCR_OWNER GHCR_REPO PRUNE_IMAGES=true; \
+            export APP_NAME GHCR_OWNER GHCR_REPO; \
             if [ -n \"\${GHCR_USERNAME}\" ] && [ -n \"\${GHCR_TOKEN}\" ]; then export GHCR_USERNAME GHCR_TOKEN; fi; \
             \"\${APP_DIR}/deploy.sh\" \"\${DEPLOY_ENV}\""
