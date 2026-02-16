@@ -155,6 +155,6 @@ jobs:
             mkdir -p \"\${APP_DIR}\"; \
             install -m 0644 \"\${REMOTE_COMPOSE}\" \"\${APP_DIR}/docker-compose.yml\"; \
             install -m 0755 \"\${REMOTE_SCRIPT}\" \"\${APP_DIR}/deploy.sh\"; \
-            export APP_NAME GHCR_OWNER GHCR_REPO PROJECT_NAME=\"\${APP_NAME}-\${DEPLOY_ENV}\" PRUNE_IMAGES=true; \
+            export APP_NAME GHCR_OWNER GHCR_REPO PRUNE_IMAGES=true; \
             if [ -n \"\${GHCR_USERNAME}\" ] && [ -n \"\${GHCR_TOKEN}\" ]; then export GHCR_USERNAME GHCR_TOKEN; fi; \
             \"\${APP_DIR}/deploy.sh\" \"\${DEPLOY_ENV}\""

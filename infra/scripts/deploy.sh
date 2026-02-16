@@ -18,7 +18,8 @@ BASE_DIR="${BASE_DIR:-/opt/${APP_NAME}}"
 ENV_DIR="${BASE_DIR}/${ENVIRONMENT}"
 COMPOSE_FILE="${COMPOSE_FILE:-${ENV_DIR}/docker-compose.yml}"
 ENV_FILE="${ENV_FILE:-${ENV_DIR}/.env}"
-PROJECT_NAME="${PROJECT_NAME:-${APP_NAME}-${ENVIRONMENT}}"
+DEFAULT_PROJECT_NAME="$(printf '%s-%s' "${APP_NAME}" "${ENVIRONMENT}" | tr '[:upper:]' '[:lower:]')"
+PROJECT_NAME="${PROJECT_NAME:-${DEFAULT_PROJECT_NAME}}"
 
 if [[ ! -f "$COMPOSE_FILE" ]]; then
   echo "Compose file not found: $COMPOSE_FILE"
