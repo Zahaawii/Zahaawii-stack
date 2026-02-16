@@ -1,0 +1,160 @@
+name: release
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_env: ${{ steps.vars.outputs.deploy_env }}
+      branch_tag: ${{ steps.vars.outputs.branch_tag }}
+      short_sha: ${{ steps.vars.outputs.short_sha }}
+      owner_lc: ${{ steps.vars.outputs.owner_lc }}
+      repo_lc: ${{ steps.vars.outputs.repo_lc }}
+      compose_source: ${{ steps.vars.outputs.compose_source }}
+    steps:
+      - id: vars
+        run: |
+          set -euo pipefail
+
+          short_sha="${GITHUB_SHA::7}"
+          owner_lc="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          repo_lc="$(echo "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+
+          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+            deploy_env="prod"
+            branch_tag="prod"
+            compose_source="infra/compose/docker-compose.prod.yml"
+          elif [[ "${GITHUB_REF_NAME}" == "develop" ]]; then
+            deploy_env="staging"
+            branch_tag="staging"
+            compose_source="infra/compose/docker-compose.staging.yml"
+          else
+            echo "Unsupported branch: ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+
+          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "owner_lc=${owner_lc}" >> "$GITHUB_OUTPUT"
+          echo "repo_lc=${repo_lc}" >> "$GITHUB_OUTPUT"
+          echo "deploy_env=${deploy_env}" >> "$GITHUB_OUTPUT"
+          echo "branch_tag=${branch_tag}" >> "$GITHUB_OUTPUT"
+          echo "compose_source=${compose_source}" >> "$GITHUB_OUTPUT"
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: meta
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image_suffix: blog-backend
+            context: apps/ZahaawiisBlog
+          - image_suffix: personal-chatbot
+            context: apps/personalChatBotJS
+          - image_suffix: mcp-server
+            context: apps/MCPDatabaseServer
+          - image_suffix: blog-frontend
+            context: apps/frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.image_suffix }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.context }}/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ needs.meta.outputs.owner_lc }}/${{ needs.meta.outputs.repo_lc }}-${{ matrix.image_suffix }}:${{ needs.meta.outputs.branch_tag }}
+            ghcr.io/${{ needs.meta.outputs.owner_lc }}/${{ needs.meta.outputs.repo_lc }}-${{ matrix.image_suffix }}:sha-${{ needs.meta.outputs.short_sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs:
+      - meta
+      - build-and-push
+    env:
+      APP_NAME: ${{ vars.APP_NAME }}
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      GHCR_DEPLOY_USERNAME: ${{ secrets.GHCR_DEPLOY_USERNAME }}
+      GHCR_DEPLOY_TOKEN: ${{ secrets.GHCR_DEPLOY_TOKEN }}
+      REPO_LC: ${{ needs.meta.outputs.repo_lc }}
+      OWNER_LC: ${{ needs.meta.outputs.owner_lc }}
+      DEPLOY_ENV: ${{ needs.meta.outputs.deploy_env }}
+      COMPOSE_SOURCE: ${{ needs.meta.outputs.compose_source }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure SSH key
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "${DEPLOY_PORT:-22}" "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy via SSH
+        run: |
+          set -euo pipefail
+
+          APP_NAME="${APP_NAME:-$REPO_LC}"
+          SSH_PORT="${DEPLOY_PORT:-22}"
+          REMOTE_COMPOSE="/tmp/${APP_NAME}-${DEPLOY_ENV}-docker-compose.yml"
+          REMOTE_SCRIPT="/tmp/${APP_NAME}-${DEPLOY_ENV}-deploy.sh"
+
+          scp -P "$SSH_PORT" "$COMPOSE_SOURCE" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_COMPOSE}"
+          scp -P "$SSH_PORT" "infra/scripts/deploy.sh" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_SCRIPT}"
+
+          printf -v ghcr_user_q '%q' "${GHCR_DEPLOY_USERNAME:-}"
+          printf -v ghcr_token_q '%q' "${GHCR_DEPLOY_TOKEN:-}"
+          printf -v app_name_q '%q' "$APP_NAME"
+          printf -v owner_q '%q' "$OWNER_LC"
+          printf -v repo_q '%q' "$REPO_LC"
+          printf -v deploy_env_q '%q' "$DEPLOY_ENV"
+          printf -v remote_compose_q '%q' "$REMOTE_COMPOSE"
+          printf -v remote_script_q '%q' "$REMOTE_SCRIPT"
+
+          ssh -p "$SSH_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" "set -euo pipefail; \
+            APP_NAME=${app_name_q}; \
+            GHCR_OWNER=${owner_q}; \
+            GHCR_REPO=${repo_q}; \
+            DEPLOY_ENV=${deploy_env_q}; \
+            REMOTE_COMPOSE=${remote_compose_q}; \
+            REMOTE_SCRIPT=${remote_script_q}; \
+            GHCR_USERNAME=${ghcr_user_q}; \
+            GHCR_TOKEN=${ghcr_token_q}; \
+            APP_DIR=\"/opt/\${APP_NAME}/\${DEPLOY_ENV}\"; \
+            mkdir -p \"\${APP_DIR}\"; \
+            install -m 0644 \"\${REMOTE_COMPOSE}\" \"\${APP_DIR}/docker-compose.yml\"; \
+            install -m 0755 \"\${REMOTE_SCRIPT}\" \"\${APP_DIR}/deploy.sh\"; \
+            export APP_NAME GHCR_OWNER GHCR_REPO PROJECT_NAME=\"\${APP_NAME}-\${DEPLOY_ENV}\" PRUNE_IMAGES=true; \
+            if [ -n \"\${GHCR_USERNAME}\" ] && [ -n \"\${GHCR_TOKEN}\" ]; then export GHCR_USERNAME GHCR_TOKEN; fi; \
+            \"\${APP_DIR}/deploy.sh\" \"\${DEPLOY_ENV}\""
