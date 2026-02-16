@@ -136,13 +136,52 @@ jobs:
           set -euo pipefail
 
           APP_NAME="${APP_NAME:-$REPO_LC}"
-          SSH_PORT="${DEPLOY_PORT:-22}"
+          SSH_PORT="$(printf '%s' "${DEPLOY_PORT:-22}" | tr -d '[:space:]')"
           SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new)
           REMOTE_COMPOSE="/tmp/${APP_NAME}-${DEPLOY_ENV}-docker-compose.yml"
           REMOTE_SCRIPT="/tmp/${APP_NAME}-${DEPLOY_ENV}-deploy.sh"
 
-          scp "${SSH_OPTS[@]}" -P "$SSH_PORT" "$COMPOSE_SOURCE" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_COMPOSE}"
-          scp "${SSH_OPTS[@]}" -P "$SSH_PORT" "infra/scripts/deploy.sh" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_SCRIPT}"
+          if [[ "$SSH_PORT" != "22" ]]; then
+            echo "Warning: DEPLOY_PORT is '$SSH_PORT' (expected '22' for your current VM setup)."
+          fi
+
+          timeout 10 bash -c "cat < /dev/null > /dev/tcp/${DEPLOY_HOST}/${SSH_PORT}" || {
+            echo "TCP preflight failed: cannot reach ${DEPLOY_HOST}:${SSH_PORT} from this GitHub runner."
+            exit 1
+          }
+
+          retry_scp() {
+            local src="$1" dst="$2"
+            local attempt=1
+            local max_attempts=4
+            while [[ "$attempt" -le "$max_attempts" ]]; do
+              if scp "${SSH_OPTS[@]}" -P "$SSH_PORT" "$src" "$dst"; then
+                return 0
+              fi
+              echo "scp attempt ${attempt}/${max_attempts} failed, retrying..."
+              sleep $((attempt * 5))
+              attempt=$((attempt + 1))
+            done
+            return 1
+          }
+
+          retry_ssh() {
+            local cmd="$1"
+            local attempt=1
+            local max_attempts=4
+            while [[ "$attempt" -le "$max_attempts" ]]; do
+              if ssh "${SSH_OPTS[@]}" -p "$SSH_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" "$cmd"; then
+                return 0
+              fi
+              echo "ssh attempt ${attempt}/${max_attempts} failed, retrying..."
+              sleep $((attempt * 5))
+              attempt=$((attempt + 1))
+            done
+            return 1
+          }
+
+          retry_scp "$COMPOSE_SOURCE" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_COMPOSE}"
+          retry_scp "infra/scripts/deploy.sh" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_SCRIPT}"
 
           printf -v ghcr_user_q '%q' "${GHCR_DEPLOY_USERNAME:-}"
           printf -v ghcr_token_q '%q' "${GHCR_DEPLOY_TOKEN:-}"
@@ -153,7 +192,7 @@ jobs:
           printf -v remote_compose_q '%q' "$REMOTE_COMPOSE"
           printf -v remote_script_q '%q' "$REMOTE_SCRIPT"
 
-          ssh "${SSH_OPTS[@]}" -p "$SSH_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" "set -euo pipefail; \
+          retry_ssh "set -euo pipefail; \
             APP_NAME=${app_name_q}; \
             GHCR_OWNER=${owner_q}; \
             GHCR_REPO=${repo_q}; \
