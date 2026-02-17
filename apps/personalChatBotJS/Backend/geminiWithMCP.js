@@ -60,6 +60,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 const app = express();
 const port = Number(process.env.PORT || 8181);
 const mcpBaseUrl = (process.env.MCP_BASE_URL || "http://127.0.0.1:8282").replace(/\/+$/, "");
+const embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 app.use(express.urlencoded({ extended: true }));
@@ -114,6 +115,7 @@ const client = new CloudClient({
 //This function is gemnins api function to embed data to vector
 const embedder = new GoogleGeminiEmbeddingFunction({
   apiKey: process.env.GOOGLE_API_KEY,
+  modelName: embeddingModel,
 });
 
 const collection = await client.getOrCreateCollection({
@@ -189,7 +191,7 @@ app.post('/api/question', async (req, res, next) => {
     ];
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-flash-latest',
       contents: content,
       config: {
         tools: [mcpToTool(mcpClient)],

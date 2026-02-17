@@ -44,6 +44,9 @@ public class JwtService {
     }
 
     public String extractUsername(String token) {
+        if (token == null || token.isBlank()) {
+            return null;
+        }
         return extractClaim(token, Claims::getSubject);
     }
 
@@ -70,12 +73,13 @@ public class JwtService {
     }
 
     public Boolean validateToken(String token, UserDetails userDetails) {
+        if (token == null || token.isBlank() || userDetails == null) {
+            return false;
+        }
+
         var claims = extractAllClaims(token);
         String sub = claims.getSubject();
         Date exp = claims.getExpiration();
-
-        // debug midlertidigt
-        System.out.println("validate> sub='" + sub + "', ud.username='" + userDetails.getUsername() + "', exp=" + exp + ", now=" + new Date());
 
         boolean sameUser   = sub != null && userDetails != null && sub.trim().equalsIgnoreCase(userDetails.getUsername().trim());
         boolean notExpired = exp != null && exp.after(new Date()); // evt. skævhed: exp.after(new Date(System.currentTimeMillis()-5000))

@@ -49,7 +49,8 @@ public class SecurityConfig {
                                 "/app.js",
                                 "/userprofile.js",
                                 "/webjars/**",
-                                "/favicon.ico")
+                                "/favicon.ico",
+                                "/error")
                                 .permitAll()
 
                                 .requestMatchers("/ws", "/ws/**").permitAll()

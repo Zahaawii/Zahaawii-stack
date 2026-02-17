@@ -71,6 +71,7 @@ services:
       BLOG_API_BASE_URL: ${BLOG_API_BASE_URL:-https://zaak.dk/api}
       CHROMADB_API_KEY: ${CHROMADB_API_KEY}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-001}
       TZ: ${TZ:-Europe/Copenhagen}
     ports:
       - "127.0.0.1:9282:8282"
@@ -95,6 +96,7 @@ services:
       MCP_BASE_URL: http://mcp-server:8282
       CHROMADB_API_KEY: ${CHROMADB_API_KEY}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-001}
       TZ: ${TZ:-Europe/Copenhagen}
     ports:
       - "127.0.0.1:9181:8181"

@@ -10,6 +10,7 @@ import { dirname } from 'path';
 
 //Implemeneting Express to make a controller, so users can give request to the backend.
 const app = express();
+const embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 app.use(express.urlencoded({ extended: true }));
@@ -30,6 +31,7 @@ const client = new CloudClient({
 //This function is gemnins api function to embed data to vector
 const embedder = new GoogleGeminiEmbeddingFunction({
   apiKey: process.env.GOOGLE_API_KEY,
+  modelName: embeddingModel,
 });
 
 const collection = await client.getOrCreateCollection({
@@ -155,4 +157,3 @@ app.post('/api/database', async (req, res) => {
 app.listen(8181, () => {
   console.log('REST API server running on port 8181');
 });
-

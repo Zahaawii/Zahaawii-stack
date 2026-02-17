@@ -10,9 +10,11 @@ const client = new CloudClient({
 });
 
 //Connect to Googles embedding function
+const embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001";
 const embedder = new GoogleGeminiEmbeddingFunction({
-       apiKey: process.env.GOOGLE_API_KEY,
-    });
+  apiKey: process.env.GOOGLE_API_KEY,
+  modelName: embeddingModel,
+});
 
 
 //Take the txt file, read it line by line and add it to the String and then add it to the collection

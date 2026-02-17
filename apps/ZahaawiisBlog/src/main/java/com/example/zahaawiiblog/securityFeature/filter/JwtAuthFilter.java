@@ -34,31 +34,29 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                                     FilterChain filterChain)
         throws ServletException, IOException {
         String authHeader = request.getHeader("Authorization");
-        String token = null;
-        String username = null;
-
-        if(authHeader != null && authHeader.startsWith("Bearer ")) {
-            token = authHeader.substring(7);
-            username = jwtService.extractUsername(token);
-        }
-
-        try {
-            System.out.println("AUTH HDR: '" + authHeader + "'");
-            System.out.println("TOKEN   : '" + token + "'");
-            username = jwtService.extractUsername(token);
-            System.out.println("USERNAME: " + username);
-        } catch (Exception e) {
-            System.out.println("extractUsername() FAILED: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
             filterChain.doFilter(request, response);
-            return; // vigtigt: lad request fortsætte; lad ikke filteret smide 403
+            return;
         }
 
+        String token = authHeader.substring(7).trim();
+        if (token.isEmpty()) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+        String username;
+        try {
+            username = jwtService.extractUsername(token);
+        } catch (Exception ignored) {
+            filterChain.doFilter(request, response);
+            return;
+        }
 
         if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
             try {
                 UserDetails userDetails = userDetailsService.loadUserByUsername(username);
                 boolean valid = jwtService.validateToken(token, userDetails);
-                System.out.println("validateToken: " + valid + " | authorities: " + userDetails.getAuthorities());
 
                 if (valid) {
                     UsernamePasswordAuthenticationToken authToken =
@@ -66,9 +64,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                     authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
                     SecurityContextHolder.getContext().setAuthentication(authToken);
                 }
-            } catch (Exception e) {
-                System.out.println("Auth building FAILED: " + e.getClass().getSimpleName() + " - " + e.getMessage());
-                // ingen 403 her – bare fortsæt
+            } catch (Exception ignored) {
+                // Continue request unauthenticated if token/user validation fails.
             }
         }
         filterChain.doFilter(request, response);
