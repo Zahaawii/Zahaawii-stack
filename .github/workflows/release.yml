@@ -222,7 +222,11 @@ jobs:
           chmod 700 ~/.ssh
           touch ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
-          ssh-keyscan -T 15 -p "${SSH_PORT}" "${DEPLOY_HOST}" >> ~/.ssh/known_hosts
+          if ssh-keyscan -T 15 -p "${SSH_PORT}" "${DEPLOY_HOST}" >> ~/.ssh/known_hosts 2>/dev/null; then
+            echo "SSH host key recorded for ${DEPLOY_HOST}:${SSH_PORT}"
+          else
+            echo "Warning: ssh-keyscan failed for ${DEPLOY_HOST}:${SSH_PORT}; proceeding with StrictHostKeyChecking=accept-new"
+          fi
 
       - name: Deploy staging
         run: |
@@ -232,7 +236,7 @@ jobs:
           APP_DIR="/opt/${APP_NAME}/staging"
           PROJECT_NAME="$(printf '%s-staging' "${APP_NAME}" | tr '[:upper:]' '[:lower:]')"
           SSH_PORT="$(printf '%s' "${DEPLOY_PORT:-22}" | tr -d '[:space:]')"
-          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=yes)
+          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new)
 
           printf -v app_dir_q '%q' "${APP_DIR}"
           printf -v project_q '%q' "${PROJECT_NAME}"
@@ -270,7 +274,7 @@ jobs:
           set -euo pipefail
 
           SSH_PORT="$(printf '%s' "${DEPLOY_PORT:-22}" | tr -d '[:space:]')"
-          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=yes)
+          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new)
 
           smoke_cmd="set -euo pipefail; \
             curl -fsS http://127.0.0.1:9080/api/status/healthz >/dev/null; \
@@ -326,7 +330,11 @@ jobs:
           chmod 700 ~/.ssh
           touch ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
-          ssh-keyscan -T 15 -p "${SSH_PORT}" "${DEPLOY_HOST}" >> ~/.ssh/known_hosts
+          if ssh-keyscan -T 15 -p "${SSH_PORT}" "${DEPLOY_HOST}" >> ~/.ssh/known_hosts 2>/dev/null; then
+            echo "SSH host key recorded for ${DEPLOY_HOST}:${SSH_PORT}"
+          else
+            echo "Warning: ssh-keyscan failed for ${DEPLOY_HOST}:${SSH_PORT}; proceeding with StrictHostKeyChecking=accept-new"
+          fi
 
       - name: Deploy production
         run: |
@@ -336,7 +344,7 @@ jobs:
           APP_DIR="/opt/${APP_NAME}/prod"
           PROJECT_NAME="$(printf '%s-prod' "${APP_NAME}" | tr '[:upper:]' '[:lower:]')"
           SSH_PORT="$(printf '%s' "${DEPLOY_PORT:-22}" | tr -d '[:space:]')"
-          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=yes)
+          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new)
 
           printf -v app_dir_q '%q' "${APP_DIR}"
           printf -v project_q '%q' "${PROJECT_NAME}"
@@ -374,7 +382,7 @@ jobs:
           set -euo pipefail
 
           SSH_PORT="$(printf '%s' "${DEPLOY_PORT:-22}" | tr -d '[:space:]')"
-          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=yes)
+          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new)
 
           smoke_cmd="set -euo pipefail; \
             curl -fsS http://127.0.0.1:8080/api/status/healthz >/dev/null; \
