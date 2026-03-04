@@ -197,14 +197,19 @@ jobs:
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
       GHCR_DEPLOY_USERNAME: ${{ secrets.GHCR_DEPLOY_USERNAME }}
       GHCR_DEPLOY_TOKEN: ${{ secrets.GHCR_DEPLOY_TOKEN }}
       REPO_LC: ${{ needs.meta.outputs.repo_lc }}
     steps:
-      - name: Add SSH key
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+      - name: Configure deploy SSH key
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_SSH_KEY:?DEPLOY_SSH_KEY is required}"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
 
       - name: Prepare SSH host key
         run: |
@@ -236,7 +241,7 @@ jobs:
           APP_DIR="/opt/${APP_NAME}/staging"
           PROJECT_NAME="$(printf '%s-staging' "${APP_NAME}" | tr '[:upper:]' '[:lower:]')"
           SSH_PORT="$(printf '%s' "${DEPLOY_PORT:-22}" | tr -d '[:space:]')"
-          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o PreferredAuthentications=publickey)
+          SSH_OPTS=(-i ~/.ssh/deploy_key -o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o PreferredAuthentications=publickey)
 
           if ! [[ "${SSH_PORT}" =~ ^[0-9]+$ ]]; then
             echo "DEPLOY_PORT must be numeric; got '${SSH_PORT}'" >&2
@@ -292,7 +297,7 @@ jobs:
           set -euo pipefail
 
           SSH_PORT="$(printf '%s' "${ACTIVE_SSH_PORT:-${DEPLOY_PORT:-22}}" | tr -d '[:space:]')"
-          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o PreferredAuthentications=publickey)
+          SSH_OPTS=(-i ~/.ssh/deploy_key -o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o PreferredAuthentications=publickey)
 
           smoke_cmd="set -euo pipefail; \
             curl -fsS http://127.0.0.1:9080/api/status/healthz >/dev/null; \
@@ -323,14 +328,19 @@ jobs:
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
       GHCR_DEPLOY_USERNAME: ${{ secrets.GHCR_DEPLOY_USERNAME }}
       GHCR_DEPLOY_TOKEN: ${{ secrets.GHCR_DEPLOY_TOKEN }}
       REPO_LC: ${{ needs.meta.outputs.repo_lc }}
     steps:
-      - name: Add SSH key
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+      - name: Configure deploy SSH key
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_SSH_KEY:?DEPLOY_SSH_KEY is required}"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
 
       - name: Prepare SSH host key
         run: |
@@ -362,7 +372,7 @@ jobs:
           APP_DIR="/opt/${APP_NAME}/prod"
           PROJECT_NAME="$(printf '%s-prod' "${APP_NAME}" | tr '[:upper:]' '[:lower:]')"
           SSH_PORT="$(printf '%s' "${DEPLOY_PORT:-22}" | tr -d '[:space:]')"
-          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o PreferredAuthentications=publickey)
+          SSH_OPTS=(-i ~/.ssh/deploy_key -o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o PreferredAuthentications=publickey)
 
           if ! [[ "${SSH_PORT}" =~ ^[0-9]+$ ]]; then
             echo "DEPLOY_PORT must be numeric; got '${SSH_PORT}'" >&2
@@ -418,7 +428,7 @@ jobs:
           set -euo pipefail
 
           SSH_PORT="$(printf '%s' "${ACTIVE_SSH_PORT:-${DEPLOY_PORT:-22}}" | tr -d '[:space:]')"
-          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o PreferredAuthentications=publickey)
+          SSH_OPTS=(-i ~/.ssh/deploy_key -o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o PreferredAuthentications=publickey)
 
           smoke_cmd="set -euo pipefail; \
             curl -fsS http://127.0.0.1:8080/api/status/healthz >/dev/null; \
