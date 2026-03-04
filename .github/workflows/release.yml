@@ -236,7 +236,17 @@ jobs:
           APP_DIR="/opt/${APP_NAME}/staging"
           PROJECT_NAME="$(printf '%s-staging' "${APP_NAME}" | tr '[:upper:]' '[:lower:]')"
           SSH_PORT="$(printf '%s' "${DEPLOY_PORT:-22}" | tr -d '[:space:]')"
-          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new)
+          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o PreferredAuthentications=publickey)
+
+          if ! [[ "${SSH_PORT}" =~ ^[0-9]+$ ]]; then
+            echo "DEPLOY_PORT must be numeric; got '${SSH_PORT}'" >&2
+            exit 1
+          fi
+
+          PORT_CANDIDATES=("${SSH_PORT}")
+          if [[ "${SSH_PORT}" != "22" ]]; then
+            PORT_CANDIDATES+=("22")
+          fi
 
           printf -v app_dir_q '%q' "${APP_DIR}"
           printf -v project_q '%q' "${PROJECT_NAME}"
@@ -257,24 +267,32 @@ jobs:
             docker compose -p \"\${PROJECT_NAME}\" --env-file .env -f docker-compose.yml pull; \
             docker compose -p \"\${PROJECT_NAME}\" --env-file .env -f docker-compose.yml up -d --remove-orphans"
 
-          attempt=1
-          max_attempts=4
-          until ssh "${SSH_OPTS[@]}" -p "${SSH_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" "${remote_cmd}"; do
-            if [[ "${attempt}" -ge "${max_attempts}" ]]; then
-              echo "Staging deploy failed after ${max_attempts} attempts" >&2
-              exit 1
-            fi
-            echo "Staging deploy attempt ${attempt}/${max_attempts} failed; retrying..."
-            sleep $((attempt * 5))
-            attempt=$((attempt + 1))
+          ACTIVE_SSH_PORT=""
+          for candidate_port in "${PORT_CANDIDATES[@]}"; do
+            for attempt in 1 2; do
+              echo "Trying staging deploy via SSH port ${candidate_port} (attempt ${attempt}/2)"
+              if ssh "${SSH_OPTS[@]}" -p "${candidate_port}" "${DEPLOY_USER}@${DEPLOY_HOST}" "${remote_cmd}"; then
+                ACTIVE_SSH_PORT="${candidate_port}"
+                break 2
+              fi
+              sleep $((attempt * 5))
+            done
           done
+
+          if [[ -z "${ACTIVE_SSH_PORT}" ]]; then
+            echo "Staging deploy failed on all candidate SSH ports: ${PORT_CANDIDATES[*]}" >&2
+            exit 1
+          fi
+
+          echo "ACTIVE_SSH_PORT=${ACTIVE_SSH_PORT}" >> "$GITHUB_ENV"
+          echo "Staging deploy succeeded via port ${ACTIVE_SSH_PORT}"
 
       - name: Staging smoke checks
         run: |
           set -euo pipefail
 
-          SSH_PORT="$(printf '%s' "${DEPLOY_PORT:-22}" | tr -d '[:space:]')"
-          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new)
+          SSH_PORT="$(printf '%s' "${ACTIVE_SSH_PORT:-${DEPLOY_PORT:-22}}" | tr -d '[:space:]')"
+          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o PreferredAuthentications=publickey)
 
           smoke_cmd="set -euo pipefail; \
             curl -fsS http://127.0.0.1:9080/api/status/healthz >/dev/null; \
@@ -344,7 +362,17 @@ jobs:
           APP_DIR="/opt/${APP_NAME}/prod"
           PROJECT_NAME="$(printf '%s-prod' "${APP_NAME}" | tr '[:upper:]' '[:lower:]')"
           SSH_PORT="$(printf '%s' "${DEPLOY_PORT:-22}" | tr -d '[:space:]')"
-          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new)
+          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o PreferredAuthentications=publickey)
+
+          if ! [[ "${SSH_PORT}" =~ ^[0-9]+$ ]]; then
+            echo "DEPLOY_PORT must be numeric; got '${SSH_PORT}'" >&2
+            exit 1
+          fi
+
+          PORT_CANDIDATES=("${SSH_PORT}")
+          if [[ "${SSH_PORT}" != "22" ]]; then
+            PORT_CANDIDATES+=("22")
+          fi
 
           printf -v app_dir_q '%q' "${APP_DIR}"
           printf -v project_q '%q' "${PROJECT_NAME}"
@@ -365,24 +393,32 @@ jobs:
             docker compose -p \"\${PROJECT_NAME}\" --env-file .env -f docker-compose.yml pull; \
             docker compose -p \"\${PROJECT_NAME}\" --env-file .env -f docker-compose.yml up -d --remove-orphans"
 
-          attempt=1
-          max_attempts=4
-          until ssh "${SSH_OPTS[@]}" -p "${SSH_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" "${remote_cmd}"; do
-            if [[ "${attempt}" -ge "${max_attempts}" ]]; then
-              echo "Production deploy failed after ${max_attempts} attempts" >&2
-              exit 1
-            fi
-            echo "Production deploy attempt ${attempt}/${max_attempts} failed; retrying..."
-            sleep $((attempt * 5))
-            attempt=$((attempt + 1))
+          ACTIVE_SSH_PORT=""
+          for candidate_port in "${PORT_CANDIDATES[@]}"; do
+            for attempt in 1 2; do
+              echo "Trying production deploy via SSH port ${candidate_port} (attempt ${attempt}/2)"
+              if ssh "${SSH_OPTS[@]}" -p "${candidate_port}" "${DEPLOY_USER}@${DEPLOY_HOST}" "${remote_cmd}"; then
+                ACTIVE_SSH_PORT="${candidate_port}"
+                break 2
+              fi
+              sleep $((attempt * 5))
+            done
           done
+
+          if [[ -z "${ACTIVE_SSH_PORT}" ]]; then
+            echo "Production deploy failed on all candidate SSH ports: ${PORT_CANDIDATES[*]}" >&2
+            exit 1
+          fi
+
+          echo "ACTIVE_SSH_PORT=${ACTIVE_SSH_PORT}" >> "$GITHUB_ENV"
+          echo "Production deploy succeeded via port ${ACTIVE_SSH_PORT}"
 
       - name: Production smoke checks
         run: |
           set -euo pipefail
 
-          SSH_PORT="$(printf '%s' "${DEPLOY_PORT:-22}" | tr -d '[:space:]')"
-          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new)
+          SSH_PORT="$(printf '%s' "${ACTIVE_SSH_PORT:-${DEPLOY_PORT:-22}}" | tr -d '[:space:]')"
+          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o PreferredAuthentications=publickey)
 
           smoke_cmd="set -euo pipefail; \
             curl -fsS http://127.0.0.1:8080/api/status/healthz >/dev/null; \
