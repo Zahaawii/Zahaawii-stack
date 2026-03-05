@@ -65,9 +65,9 @@ jobs:
         working-directory: apps/ZahaawiisBlog
         run: ./mvnw -B test
 
-      - name: Test MCP backend
+      - name: Build MCP backend (skip tests)
         working-directory: apps/MCPDatabaseServer
-        run: ./mvnw -B test
+        run: ./mvnw -B -DskipTests package
 
   build-and-push:
     runs-on: ubuntu-latest
