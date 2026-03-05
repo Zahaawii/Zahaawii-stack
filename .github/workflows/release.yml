@@ -1,57 +1,79 @@
-name: release
+name: ci-build-and-push
 
 on:
   push:
     branches:
       - develop
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: ci-${{ github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   meta:
     runs-on: ubuntu-latest
     outputs:
-      deploy_env: ${{ steps.vars.outputs.deploy_env }}
-      branch_tag: ${{ steps.vars.outputs.branch_tag }}
-      short_sha: ${{ steps.vars.outputs.short_sha }}
       owner_lc: ${{ steps.vars.outputs.owner_lc }}
       repo_lc: ${{ steps.vars.outputs.repo_lc }}
-      compose_source: ${{ steps.vars.outputs.compose_source }}
+      short_sha: ${{ steps.vars.outputs.short_sha }}
+      branch_tag: ${{ steps.vars.outputs.branch_tag }}
     steps:
       - id: vars
+        shell: bash
         run: |
           set -euo pipefail
 
-          short_sha="${GITHUB_SHA::7}"
           owner_lc="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           repo_lc="$(echo "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+          short_sha="${GITHUB_SHA::7}"
 
           if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
-            deploy_env="prod"
             branch_tag="prod"
-            compose_source="infra/compose/docker-compose.prod.yml"
           elif [[ "${GITHUB_REF_NAME}" == "develop" ]]; then
-            deploy_env="staging"
             branch_tag="staging"
-            compose_source="infra/compose/docker-compose.staging.yml"
           else
             echo "Unsupported branch: ${GITHUB_REF_NAME}" >&2
             exit 1
           fi
 
-          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
           echo "owner_lc=${owner_lc}" >> "$GITHUB_OUTPUT"
           echo "repo_lc=${repo_lc}" >> "$GITHUB_OUTPUT"
-          echo "deploy_env=${deploy_env}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
           echo "branch_tag=${branch_tag}" >> "$GITHUB_OUTPUT"
-          echo "compose_source=${compose_source}" >> "$GITHUB_OUTPUT"
+
+  validate-maven:
+    runs-on: ubuntu-latest
+    needs: meta
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Test blog backend
+        working-directory: apps/ZahaawiisBlog
+        run: ./mvnw -B test
+
+      - name: Build MCP backend (skip tests)
+        working-directory: apps/MCPDatabaseServer
+        run: ./mvnw -B -DskipTests package
 
   build-and-push:
     runs-on: ubuntu-latest
-    needs: meta
+    needs:
+      - meta
+      - validate-maven
     strategy:
       fail-fast: false
       matrix:
@@ -91,120 +113,3 @@ jobs:
             ghcr.io/${{ needs.meta.outputs.owner_lc }}/${{ needs.meta.outputs.repo_lc }}-${{ matrix.image_suffix }}:sha-${{ needs.meta.outputs.short_sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  deploy:
-    runs-on: ubuntu-latest
-    needs:
-      - meta
-      - build-and-push
-    env:
-      APP_NAME: ${{ vars.APP_NAME }}
-      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
-      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-      GHCR_DEPLOY_USERNAME: ${{ secrets.GHCR_DEPLOY_USERNAME }}
-      GHCR_DEPLOY_TOKEN: ${{ secrets.GHCR_DEPLOY_TOKEN }}
-      REPO_LC: ${{ needs.meta.outputs.repo_lc }}
-      OWNER_LC: ${{ needs.meta.outputs.owner_lc }}
-      DEPLOY_ENV: ${{ needs.meta.outputs.deploy_env }}
-      COMPOSE_SOURCE: ${{ needs.meta.outputs.compose_source }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure SSH key
-        run: |
-          set -euo pipefail
-          : "${DEPLOY_HOST:?DEPLOY_HOST is required}"
-          : "${DEPLOY_USER:?DEPLOY_USER is required}"
-          : "${DEPLOY_SSH_KEY:?DEPLOY_SSH_KEY is required}"
-          if ! [[ "${DEPLOY_PORT:-22}" =~ ^[0-9]+$ ]]; then
-            echo "DEPLOY_PORT must be a numeric port (current value is invalid)."
-            exit 1
-          fi
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          touch ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-          ssh-keyscan -T 15 -p "${DEPLOY_PORT:-22}" "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || \
-            echo "Warning: ssh-keyscan could not fetch host key; proceeding with accept-new on first SSH connect."
-
-      - name: Deploy via SSH
-        run: |
-          set -euo pipefail
-
-          APP_NAME="${APP_NAME:-$REPO_LC}"
-          SSH_PORT="$(printf '%s' "${DEPLOY_PORT:-22}" | tr -d '[:space:]')"
-          SSH_OPTS=(-o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new)
-          REMOTE_COMPOSE="/tmp/${APP_NAME}-${DEPLOY_ENV}-docker-compose.yml"
-          REMOTE_SCRIPT="/tmp/${APP_NAME}-${DEPLOY_ENV}-deploy.sh"
-
-          if [[ "$SSH_PORT" != "22" ]]; then
-            echo "Warning: DEPLOY_PORT is '$SSH_PORT' (expected '22' for your current VM setup)."
-          fi
-
-          timeout 10 bash -c "cat < /dev/null > /dev/tcp/${DEPLOY_HOST}/${SSH_PORT}" || {
-            echo "TCP preflight failed: cannot reach ${DEPLOY_HOST}:${SSH_PORT} from this GitHub runner."
-            exit 1
-          }
-
-          retry_scp() {
-            local src="$1" dst="$2"
-            local attempt=1
-            local max_attempts=4
-            while [[ "$attempt" -le "$max_attempts" ]]; do
-              if scp "${SSH_OPTS[@]}" -P "$SSH_PORT" "$src" "$dst"; then
-                return 0
-              fi
-              echo "scp attempt ${attempt}/${max_attempts} failed, retrying..."
-              sleep $((attempt * 5))
-              attempt=$((attempt + 1))
-            done
-            return 1
-          }
-
-          retry_ssh() {
-            local cmd="$1"
-            local attempt=1
-            local max_attempts=4
-            while [[ "$attempt" -le "$max_attempts" ]]; do
-              if ssh "${SSH_OPTS[@]}" -p "$SSH_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" "$cmd"; then
-                return 0
-              fi
-              echo "ssh attempt ${attempt}/${max_attempts} failed, retrying..."
-              sleep $((attempt * 5))
-              attempt=$((attempt + 1))
-            done
-            return 1
-          }
-
-          retry_scp "$COMPOSE_SOURCE" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_COMPOSE}"
-          retry_scp "infra/scripts/deploy.sh" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_SCRIPT}"
-
-          printf -v ghcr_user_q '%q' "${GHCR_DEPLOY_USERNAME:-}"
-          printf -v ghcr_token_q '%q' "${GHCR_DEPLOY_TOKEN:-}"
-          printf -v app_name_q '%q' "$APP_NAME"
-          printf -v owner_q '%q' "$OWNER_LC"
-          printf -v repo_q '%q' "$REPO_LC"
-          printf -v deploy_env_q '%q' "$DEPLOY_ENV"
-          printf -v remote_compose_q '%q' "$REMOTE_COMPOSE"
-          printf -v remote_script_q '%q' "$REMOTE_SCRIPT"
-
-          retry_ssh "set -euo pipefail; \
-            APP_NAME=${app_name_q}; \
-            GHCR_OWNER=${owner_q}; \
-            GHCR_REPO=${repo_q}; \
-            DEPLOY_ENV=${deploy_env_q}; \
-            REMOTE_COMPOSE=${remote_compose_q}; \
-            REMOTE_SCRIPT=${remote_script_q}; \
-            GHCR_USERNAME=${ghcr_user_q}; \
-            GHCR_TOKEN=${ghcr_token_q}; \
-            APP_DIR=\"/opt/\${APP_NAME}/\${DEPLOY_ENV}\"; \
-            mkdir -p \"\${APP_DIR}\"; \
-            install -m 0644 \"\${REMOTE_COMPOSE}\" \"\${APP_DIR}/docker-compose.yml\"; \
-            install -m 0755 \"\${REMOTE_SCRIPT}\" \"\${APP_DIR}/deploy.sh\"; \
-            export APP_NAME GHCR_OWNER GHCR_REPO; \
-            if [ -n \"\${GHCR_USERNAME}\" ] && [ -n \"\${GHCR_TOKEN}\" ]; then export GHCR_USERNAME GHCR_TOKEN; fi; \
-            \"\${APP_DIR}/deploy.sh\" \"\${DEPLOY_ENV}\""
