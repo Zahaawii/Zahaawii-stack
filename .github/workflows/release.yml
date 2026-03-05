@@ -1,4 +1,4 @@
-name: release
+name: ci-build-and-push
 
 on:
   push:
@@ -12,25 +12,18 @@ permissions:
   packages: write
 
 concurrency:
-  group: release-${{ github.ref_name }}
-  cancel-in-progress: false
+  group: ci-${{ github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   meta:
     runs-on: ubuntu-latest
     outputs:
-      deploy_env: ${{ steps.vars.outputs.deploy_env }}
-      branch_tag: ${{ steps.vars.outputs.branch_tag }}
-      short_sha: ${{ steps.vars.outputs.short_sha }}
-      source_sha_short: ${{ steps.vars.outputs.source_sha_short }}
       owner_lc: ${{ steps.vars.outputs.owner_lc }}
       repo_lc: ${{ steps.vars.outputs.repo_lc }}
+      short_sha: ${{ steps.vars.outputs.short_sha }}
+      branch_tag: ${{ steps.vars.outputs.branch_tag }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-
       - id: vars
         shell: bash
         run: |
@@ -39,21 +32,11 @@ jobs:
           owner_lc="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           repo_lc="$(echo "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
           short_sha="${GITHUB_SHA::7}"
-          source_sha="${GITHUB_SHA}"
 
-          if [[ "${GITHUB_REF_NAME}" == "develop" ]]; then
-            deploy_env="staging"
-            branch_tag="staging"
-          elif [[ "${GITHUB_REF_NAME}" == "main" ]]; then
-            deploy_env="prod"
+          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
             branch_tag="prod"
-            parents=( $(git rev-list --parents -n 1 "${GITHUB_SHA}") )
-            if [[ "${#parents[@]}" -ge 3 ]]; then
-              source_sha="${parents[2]}"
-              echo "Using merge second-parent SHA for promotion: ${source_sha}"
-            else
-              echo "No second parent found; promoting from current SHA: ${source_sha}"
-            fi
+          elif [[ "${GITHUB_REF_NAME}" == "develop" ]]; then
+            branch_tag="staging"
           else
             echo "Unsupported branch: ${GITHUB_REF_NAME}" >&2
             exit 1
@@ -62,11 +45,9 @@ jobs:
           echo "owner_lc=${owner_lc}" >> "$GITHUB_OUTPUT"
           echo "repo_lc=${repo_lc}" >> "$GITHUB_OUTPUT"
           echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
-          echo "source_sha_short=${source_sha:0:7}" >> "$GITHUB_OUTPUT"
-          echo "deploy_env=${deploy_env}" >> "$GITHUB_OUTPUT"
           echo "branch_tag=${branch_tag}" >> "$GITHUB_OUTPUT"
 
-  validate:
+  validate-maven:
     runs-on: ubuntu-latest
     needs: meta
     steps:
@@ -80,20 +61,19 @@ jobs:
           java-version: "21"
           cache: maven
 
-      - name: Blog backend tests
+      - name: Test blog backend
         working-directory: apps/ZahaawiisBlog
         run: ./mvnw -B test
 
-      - name: MCP backend build sanity
+      - name: Test MCP backend
         working-directory: apps/MCPDatabaseServer
-        run: ./mvnw -B -DskipTests package
+        run: ./mvnw -B test
 
-  build-staging-images:
+  build-and-push:
     runs-on: ubuntu-latest
     needs:
       - meta
-      - validate
-    if: needs.meta.outputs.deploy_env == 'staging'
+      - validate-maven
     strategy:
       fail-fast: false
       matrix:
@@ -129,320 +109,7 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/${{ needs.meta.outputs.owner_lc }}/${{ needs.meta.outputs.repo_lc }}-${{ matrix.image_suffix }}:staging
+            ghcr.io/${{ needs.meta.outputs.owner_lc }}/${{ needs.meta.outputs.repo_lc }}-${{ matrix.image_suffix }}:${{ needs.meta.outputs.branch_tag }}
             ghcr.io/${{ needs.meta.outputs.owner_lc }}/${{ needs.meta.outputs.repo_lc }}-${{ matrix.image_suffix }}:sha-${{ needs.meta.outputs.short_sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  promote-prod-images:
-    runs-on: ubuntu-latest
-    needs:
-      - meta
-      - validate
-    if: needs.meta.outputs.deploy_env == 'prod'
-    strategy:
-      fail-fast: false
-      matrix:
-        image_suffix:
-          - blog-backend
-          - personal-chatbot
-          - mcp-server
-          - blog-frontend
-
-    steps:
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Promote tested SHA image to prod
-        env:
-          OWNER_LC: ${{ needs.meta.outputs.owner_lc }}
-          REPO_LC: ${{ needs.meta.outputs.repo_lc }}
-          SOURCE_SHA_SHORT: ${{ needs.meta.outputs.source_sha_short }}
-          MAIN_SHA_SHORT: ${{ needs.meta.outputs.short_sha }}
-          IMAGE_SUFFIX: ${{ matrix.image_suffix }}
-        run: |
-          set -euo pipefail
-
-          image_base="ghcr.io/${OWNER_LC}/${REPO_LC}-${IMAGE_SUFFIX}"
-          source_ref="${image_base}:sha-${SOURCE_SHA_SHORT}"
-          prod_ref="${image_base}:prod"
-          main_sha_ref="${image_base}:sha-${MAIN_SHA_SHORT}"
-
-          if ! docker buildx imagetools inspect "${source_ref}" >/dev/null 2>&1; then
-            echo "Source image not found: ${source_ref}" >&2
-            echo "Expected a tested staging SHA image to exist before production promotion." >&2
-            exit 1
-          fi
-
-          docker buildx imagetools create \
-            -t "${prod_ref}" \
-            -t "${main_sha_ref}" \
-            "${source_ref}"
-
-  deploy-staging:
-    runs-on: ubuntu-latest
-    needs:
-      - meta
-      - build-staging-images
-    if: needs.meta.outputs.deploy_env == 'staging'
-    env:
-      APP_NAME: ${{ vars.APP_NAME }}
-      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
-      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-      GHCR_DEPLOY_USERNAME: ${{ secrets.GHCR_DEPLOY_USERNAME }}
-      GHCR_DEPLOY_TOKEN: ${{ secrets.GHCR_DEPLOY_TOKEN }}
-      REPO_LC: ${{ needs.meta.outputs.repo_lc }}
-    steps:
-      - name: Configure deploy SSH key
-        run: |
-          set -euo pipefail
-          : "${DEPLOY_SSH_KEY:?DEPLOY_SSH_KEY is required}"
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-
-      - name: Prepare SSH host key
-        run: |
-          set -euo pipefail
-          : "${DEPLOY_HOST:?DEPLOY_HOST is required}"
-          : "${DEPLOY_USER:?DEPLOY_USER is required}"
-
-          SSH_PORT="$(printf '%s' "${DEPLOY_PORT:-22}" | tr -d '[:space:]')"
-          if ! [[ "${SSH_PORT}" =~ ^[0-9]+$ ]]; then
-            echo "DEPLOY_PORT must be numeric; got '${SSH_PORT}'" >&2
-            exit 1
-          fi
-
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          touch ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-          if ssh-keyscan -T 15 -p "${SSH_PORT}" "${DEPLOY_HOST}" >> ~/.ssh/known_hosts 2>/dev/null; then
-            echo "SSH host key recorded for ${DEPLOY_HOST}:${SSH_PORT}"
-          else
-            echo "Warning: ssh-keyscan failed for ${DEPLOY_HOST}:${SSH_PORT}; proceeding with StrictHostKeyChecking=accept-new"
-          fi
-
-      - name: Deploy staging
-        run: |
-          set -euo pipefail
-
-          APP_NAME="${APP_NAME:-$REPO_LC}"
-          APP_DIR="/opt/${APP_NAME}/staging"
-          PROJECT_NAME="$(printf '%s-staging' "${APP_NAME}" | tr '[:upper:]' '[:lower:]')"
-          SSH_PORT="$(printf '%s' "${DEPLOY_PORT:-22}" | tr -d '[:space:]')"
-          SSH_OPTS=(-i ~/.ssh/deploy_key -o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o PreferredAuthentications=publickey)
-
-          if ! [[ "${SSH_PORT}" =~ ^[0-9]+$ ]]; then
-            echo "DEPLOY_PORT must be numeric; got '${SSH_PORT}'" >&2
-            exit 1
-          fi
-
-          PORT_CANDIDATES=("${SSH_PORT}")
-          if [[ "${SSH_PORT}" != "22" ]]; then
-            PORT_CANDIDATES+=("22")
-          fi
-
-          printf -v app_dir_q '%q' "${APP_DIR}"
-          printf -v project_q '%q' "${PROJECT_NAME}"
-          printf -v ghcr_user_q '%q' "${GHCR_DEPLOY_USERNAME:-}"
-          printf -v ghcr_token_q '%q' "${GHCR_DEPLOY_TOKEN:-}"
-
-          remote_cmd="set -euo pipefail; \
-            APP_DIR=${app_dir_q}; \
-            PROJECT_NAME=${project_q}; \
-            GHCR_USERNAME=${ghcr_user_q}; \
-            GHCR_TOKEN=${ghcr_token_q}; \
-            cd \"\${APP_DIR}\"; \
-            test -f docker-compose.yml; \
-            test -f .env; \
-            if [ -n \"\${GHCR_USERNAME}\" ] && [ -n \"\${GHCR_TOKEN}\" ]; then \
-              printf '%s' \"\${GHCR_TOKEN}\" | docker login ghcr.io -u \"\${GHCR_USERNAME}\" --password-stdin; \
-            fi; \
-            docker compose -p \"\${PROJECT_NAME}\" --env-file .env -f docker-compose.yml pull; \
-            docker compose -p \"\${PROJECT_NAME}\" --env-file .env -f docker-compose.yml up -d --remove-orphans"
-
-          ACTIVE_SSH_PORT=""
-          for candidate_port in "${PORT_CANDIDATES[@]}"; do
-            for attempt in 1 2; do
-              echo "Trying staging deploy via SSH port ${candidate_port} (attempt ${attempt}/2)"
-              if ssh "${SSH_OPTS[@]}" -p "${candidate_port}" "${DEPLOY_USER}@${DEPLOY_HOST}" "${remote_cmd}"; then
-                ACTIVE_SSH_PORT="${candidate_port}"
-                break 2
-              fi
-              sleep $((attempt * 5))
-            done
-          done
-
-          if [[ -z "${ACTIVE_SSH_PORT}" ]]; then
-            echo "Staging deploy failed on all candidate SSH ports: ${PORT_CANDIDATES[*]}" >&2
-            exit 1
-          fi
-
-          echo "ACTIVE_SSH_PORT=${ACTIVE_SSH_PORT}" >> "$GITHUB_ENV"
-          echo "Staging deploy succeeded via port ${ACTIVE_SSH_PORT}"
-
-      - name: Staging smoke checks
-        run: |
-          set -euo pipefail
-
-          SSH_PORT="$(printf '%s' "${ACTIVE_SSH_PORT:-${DEPLOY_PORT:-22}}" | tr -d '[:space:]')"
-          SSH_OPTS=(-i ~/.ssh/deploy_key -o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o PreferredAuthentications=publickey)
-
-          smoke_cmd="set -euo pipefail; \
-            curl -fsS http://127.0.0.1:9080/api/status/healthz >/dev/null; \
-            curl -fsS http://127.0.0.1:9181/healthz >/dev/null; \
-            curl -fsS http://127.0.0.1:9282/healthz >/dev/null"
-
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if ssh "${SSH_OPTS[@]}" -p "${SSH_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" "${smoke_cmd}"; then
-              echo "Staging smoke checks passed"
-              exit 0
-            fi
-            echo "Staging smoke attempt ${attempt}/10 failed; waiting before retry..."
-            sleep 10
-          done
-
-          echo "Staging smoke checks failed" >&2
-          exit 1
-
-  deploy-prod:
-    runs-on: ubuntu-latest
-    needs:
-      - meta
-      - promote-prod-images
-    if: needs.meta.outputs.deploy_env == 'prod'
-    environment: production
-    env:
-      APP_NAME: ${{ vars.APP_NAME }}
-      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
-      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-      GHCR_DEPLOY_USERNAME: ${{ secrets.GHCR_DEPLOY_USERNAME }}
-      GHCR_DEPLOY_TOKEN: ${{ secrets.GHCR_DEPLOY_TOKEN }}
-      REPO_LC: ${{ needs.meta.outputs.repo_lc }}
-    steps:
-      - name: Configure deploy SSH key
-        run: |
-          set -euo pipefail
-          : "${DEPLOY_SSH_KEY:?DEPLOY_SSH_KEY is required}"
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-
-      - name: Prepare SSH host key
-        run: |
-          set -euo pipefail
-          : "${DEPLOY_HOST:?DEPLOY_HOST is required}"
-          : "${DEPLOY_USER:?DEPLOY_USER is required}"
-
-          SSH_PORT="$(printf '%s' "${DEPLOY_PORT:-22}" | tr -d '[:space:]')"
-          if ! [[ "${SSH_PORT}" =~ ^[0-9]+$ ]]; then
-            echo "DEPLOY_PORT must be numeric; got '${SSH_PORT}'" >&2
-            exit 1
-          fi
-
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          touch ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-          if ssh-keyscan -T 15 -p "${SSH_PORT}" "${DEPLOY_HOST}" >> ~/.ssh/known_hosts 2>/dev/null; then
-            echo "SSH host key recorded for ${DEPLOY_HOST}:${SSH_PORT}"
-          else
-            echo "Warning: ssh-keyscan failed for ${DEPLOY_HOST}:${SSH_PORT}; proceeding with StrictHostKeyChecking=accept-new"
-          fi
-
-      - name: Deploy production
-        run: |
-          set -euo pipefail
-
-          APP_NAME="${APP_NAME:-$REPO_LC}"
-          APP_DIR="/opt/${APP_NAME}/prod"
-          PROJECT_NAME="$(printf '%s-prod' "${APP_NAME}" | tr '[:upper:]' '[:lower:]')"
-          SSH_PORT="$(printf '%s' "${DEPLOY_PORT:-22}" | tr -d '[:space:]')"
-          SSH_OPTS=(-i ~/.ssh/deploy_key -o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o PreferredAuthentications=publickey)
-
-          if ! [[ "${SSH_PORT}" =~ ^[0-9]+$ ]]; then
-            echo "DEPLOY_PORT must be numeric; got '${SSH_PORT}'" >&2
-            exit 1
-          fi
-
-          PORT_CANDIDATES=("${SSH_PORT}")
-          if [[ "${SSH_PORT}" != "22" ]]; then
-            PORT_CANDIDATES+=("22")
-          fi
-
-          printf -v app_dir_q '%q' "${APP_DIR}"
-          printf -v project_q '%q' "${PROJECT_NAME}"
-          printf -v ghcr_user_q '%q' "${GHCR_DEPLOY_USERNAME:-}"
-          printf -v ghcr_token_q '%q' "${GHCR_DEPLOY_TOKEN:-}"
-
-          remote_cmd="set -euo pipefail; \
-            APP_DIR=${app_dir_q}; \
-            PROJECT_NAME=${project_q}; \
-            GHCR_USERNAME=${ghcr_user_q}; \
-            GHCR_TOKEN=${ghcr_token_q}; \
-            cd \"\${APP_DIR}\"; \
-            test -f docker-compose.yml; \
-            test -f .env; \
-            if [ -n \"\${GHCR_USERNAME}\" ] && [ -n \"\${GHCR_TOKEN}\" ]; then \
-              printf '%s' \"\${GHCR_TOKEN}\" | docker login ghcr.io -u \"\${GHCR_USERNAME}\" --password-stdin; \
-            fi; \
-            docker compose -p \"\${PROJECT_NAME}\" --env-file .env -f docker-compose.yml pull; \
-            docker compose -p \"\${PROJECT_NAME}\" --env-file .env -f docker-compose.yml up -d --remove-orphans"
-
-          ACTIVE_SSH_PORT=""
-          for candidate_port in "${PORT_CANDIDATES[@]}"; do
-            for attempt in 1 2; do
-              echo "Trying production deploy via SSH port ${candidate_port} (attempt ${attempt}/2)"
-              if ssh "${SSH_OPTS[@]}" -p "${candidate_port}" "${DEPLOY_USER}@${DEPLOY_HOST}" "${remote_cmd}"; then
-                ACTIVE_SSH_PORT="${candidate_port}"
-                break 2
-              fi
-              sleep $((attempt * 5))
-            done
-          done
-
-          if [[ -z "${ACTIVE_SSH_PORT}" ]]; then
-            echo "Production deploy failed on all candidate SSH ports: ${PORT_CANDIDATES[*]}" >&2
-            exit 1
-          fi
-
-          echo "ACTIVE_SSH_PORT=${ACTIVE_SSH_PORT}" >> "$GITHUB_ENV"
-          echo "Production deploy succeeded via port ${ACTIVE_SSH_PORT}"
-
-      - name: Production smoke checks
-        run: |
-          set -euo pipefail
-
-          SSH_PORT="$(printf '%s' "${ACTIVE_SSH_PORT:-${DEPLOY_PORT:-22}}" | tr -d '[:space:]')"
-          SSH_OPTS=(-i ~/.ssh/deploy_key -o ServerAliveInterval=20 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o PreferredAuthentications=publickey)
-
-          smoke_cmd="set -euo pipefail; \
-            curl -fsS http://127.0.0.1:8080/api/status/healthz >/dev/null; \
-            curl -fsS http://127.0.0.1:8181/healthz >/dev/null; \
-            curl -fsS http://127.0.0.1:8282/healthz >/dev/null"
-
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if ssh "${SSH_OPTS[@]}" -p "${SSH_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" "${smoke_cmd}"; then
-              echo "Production smoke checks passed"
-              exit 0
-            fi
-            echo "Production smoke attempt ${attempt}/10 failed; waiting before retry..."
-            sleep 10
-          done
-
-          echo "Production smoke checks failed" >&2
-          exit 1
